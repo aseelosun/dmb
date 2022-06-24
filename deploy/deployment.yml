@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${CI_PROJECT_NAME}
+  labels:
+    maintainer: ${GITLAB_USER_LOGIN}
+    app: ${CI_PROJECT_NAME}
+spec:
+  selector:
+    matchLabels:
+      app: ${CI_PROJECT_NAME}
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        maintainer: ${GITLAB_USER_LOGIN}
+        app: ${CI_PROJECT_NAME}
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - ${CI_PROJECT_NAME}
+              topologyKey: "kubernetes.io/hostname"
+      containers:
+        - name: ${CI_PROJECT_NAME}
+          image: $HR_REGISTRY/$CI_PROJECT_NAME-$CI_PROJECT_ID/$CI_PROJECT_NAME:$CI_ENVIRONMENT_SLUG-$CI_PIPELINE_ID
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: ${APP_PORT}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: ${APP_PORT}
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          startupProbe:
+              httpGet:
+                path: /healthz
+                port: ${APP_PORT}
+              failureThreshold: 30
+              periodSeconds: 10
+          env:
+            - name: GIN_MODE
+              value: "${GIN_MODE}"
+            - name: TZ
+              value: "Asia/Almaty"
+      imagePullSecrets:
+        - name: harbor
+      volumes:
+        - name: config
+          secret:
+            secretName: config
+            items:
+              - key: config
+                path: cfg

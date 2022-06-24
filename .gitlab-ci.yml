@@ -1,0 +1,92 @@
+stages:
+  - build
+  - release
+  - deploy
+
+
+build:
+  tags:
+    - kube-build
+  only:
+    - dev
+  stage: build
+  image: reg.1cb.kz/dockerhub/library/golang:1.16.0-stretch
+  variables:
+    CGO_ENABLED: 0
+    GOOS: linux
+    GOARCH: amd64
+  before_script:
+    - cat ${CONFIG} > conf.json
+    - go env -w "GOPRIVATE=${CI_SERVER_HOST}"
+    - echo -e "machine ${CI_SERVER_HOST} login gitlab-ci-token password ${CI_JOB_TOKEN}" > ~/.netrc
+  script:
+    - GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -mod vendor -ldflags='-w -s' -o ./bin/binary
+  artifacts:
+    paths:
+      - bin/binary
+    expire_in: 30 minute
+  allow_failure: false
+
+.base_release:
+  tags:
+    - kube-build
+  stage: release
+  image:
+    name: reg.1cb.kz/library/kaniko-project/executor:debug
+    entrypoint: [ "" ]
+  script:
+    - mkdir -p /kaniko/.docker
+    - echo "{\"auths\":{\"$HR_REGISTRY\":{\"username\":\"$HR_REGISTRY_USER\",\"password\":\"$HR_REGISTRY_PASSWORD\"}}}" > /kaniko/.docker/config.json
+    - KANIKOPROXYBUILDARGS="--build-arg http_proxy=http://172.28.5.202:3128/ --build-arg https_proxy=http://172.28.5.202:3128/ --build-arg no_proxy=localhost,127.0.0.1,.1cb.kz"
+    - /kaniko/executor --context $CI_PROJECT_DIR --dockerfile $CI_PROJECT_DIR/Dockerfile $KANIKOPROXYBUILDARGS --destination $HR_REGISTRY/$CI_PROJECT_NAME-$CI_PROJECT_ID/$CI_PROJECT_NAME:$CI_ENVIRONMENT_SLUG-$CI_PIPELINE_ID --destination $HR_REGISTRY/$CI_PROJECT_NAME-$CI_PROJECT_ID/$CI_PROJECT_NAME:latest
+  allow_failure: false
+
+release on dev:
+  extends: .base_release
+  only:
+    refs:
+      - dev
+  environment:
+    name: k09-staging
+#
+#release on production:
+#  extends: .base_release
+#  only:
+#    refs:
+#      - master
+#  environment:
+#    name: k09-production
+
+.base_deploy:
+  tags:
+    - kube-build
+  stage: deploy
+  image: reg.1cb.kz/library/kubectl:1.16.14
+  script:
+    - export APP_PORT=8080
+    # IMAGE_PULL_SECRET
+    - kubectl create secret docker-registry harbor --docker-server=$HR_REGISTRY --docker-username=$HR_REGISTRY_USER --docker-password=$HR_REGISTRY_PASSWORD --docker-email=$GITLAB_USER_EMAIL --dry-run=true -o yaml | kubectl replace --force -f -
+    - cat ./deploy/network/service.yml | envsubst | kubectl apply -f -
+    - cat ./deploy/deployment.yml | envsubst | kubectl apply -f -
+    - cat ./deploy/network/ingress.yml | envsubst | kubectl apply -f -
+  allow_failure: false
+
+deploy on dev:
+  only:
+    - dev
+  environment:
+    name: k09-staging
+  variables:
+    HOST: ${CI_PROJECT_NAME}-staging.1cb.kz
+  extends: .base_deploy
+
+#deploy on production:
+#  only:
+#    - master
+#  when: manual
+#  environment:
+#    name: k09-production
+#  variables:
+#    REPLICAS: ${REPLICAS}
+#    HOST: ${HOST}
+#  extends: .base_deploy
